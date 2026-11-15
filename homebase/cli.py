@@ -27,6 +27,7 @@ HomeBase — private household ledger
   python -m homebase inventory
   python -m homebase subscriptions
   python -m homebase alerts
+  python -m homebase backup run
   python -m homebase compose
 
 The ledger file defaults to $XDG_DATA_HOME/homebase/homebase.db
@@ -140,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             for row in result["rejected"]:
                 print(f"  rejected line {row['line']}: {row['reason']}")
+            return 0
+        if command == "backup":
+            from homebase.backup import dispatch
+
+            dispatch(rest)
             return 0
         if command == "compose":
             print(generate_docker_compose(), end="")

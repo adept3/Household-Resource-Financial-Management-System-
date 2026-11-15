@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly HomeBase backup test restore
+
+[Timer]
+OnCalendar=*-*-01 04:00:00
+RandomizedDelaySec=1h
+Persistent=true
+Unit=homebase-backup-check.service
+
+[Install]
+WantedBy=timers.target

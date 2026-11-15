@@ -1,0 +1,25 @@
+[Unit]
+Description=HomeBase encrypted backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=homebase
+Group=homebase
+Environment=PYTHONPATH=/opt/homebase
+Environment=HOME=/var/lib/homebase
+Environment=XDG_CACHE_HOME=/var/lib/homebase/.cache
+Environment=XDG_CONFIG_HOME=/var/lib/homebase/.config
+Environment=HOMEBASE_DATA_DIR=/var/lib/homebase
+EnvironmentFile=-/etc/homebase/homebase.env
+ExecStart=/usr/bin/python3 -m homebase backup run
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# The homebase user's ledger, restic cache, and rclone config all live here.
+ReadWritePaths=/var/lib/homebase
+Nice=19
+IOSchedulingClass=idle

@@ -17,10 +17,11 @@ There is no `LICENSE` file in this fork. Adding one is the original author's dec
 - **Append-only `audit_log`** for financial writes. Triggers reject `UPDATE` and `DELETE`.
 - **Subscriptions** whose next due date is not already in the past, and which move forward when you mark them paid. Also local maintenance tasks and warranty dates. These are reminders in SQLite, not connections to a bank or a utility.
 - **Alerts** whose default text does not include dollar amounts. Set `HOMEBASE_NOTIFY_AMOUNTS=1` to include them, and `HOMEBASE_NTFY_URL` if you want them posted to ntfy.
+- **Encrypted backups** to Google Drive through the system `restic` and `rclone` programs. The ledger is snapshotted with SQLite's online backup API before it is encrypted. See [docs/backups.md](docs/backups.md).
 
 ## What it does not do
 
-No web UI, no accounts or passwords for the ledger itself, no email/IMAP parsing, and no live clients for Actual Budget, Grocy, Mealie, Frigate, Ecobee, Immich, or Pi-hole. The Compose file can describe those services for later; they are in a `later` profile and stay off.
+No web UI, no accounts or passwords for the ledger itself, no email/IMAP parsing, and no live clients for Actual Budget, Grocy, Mealie, Frigate, Ecobee, Immich, or Pi-hole. The Compose file can describe those services for later; they are in a `later` profile and stay off. Backups go to Google Drive (and, if you turn it on, a local folder). There is no Backblaze B2 or S3 support.
 
 SQLCipher is optional and not bundled. If `HOMEBASE_DB_KEY` is set and this Python's SQLite has no SQLCipher, HomeBase refuses to open the file rather than store it in plaintext.
 
@@ -56,18 +57,23 @@ python3 -m homebase init
 | `HOMEBASE_NOTIFY_AMOUNTS` | `0` (default) keeps amounts out of push text |
 | `HOMEBASE_NTFY_URL` / `HOMEBASE_NTFY_TOPIC` | Optional ntfy endpoint. Unset means alerts are printed only |
 | `HOMEBASE_DB_KEY` | Optional SQLCipher key. Unset on stock CPython |
+| `RESTIC_PASSWORD_FILE` | Mode `0600` file with the restic password. Required for backups |
+| `RESTIC_REPOSITORY` | Default `rclone:gdrive:homebase-backups` |
+| `HOMEBASE_BACKUP_LOCAL_REPOSITORY` | Optional second restic repo (USB). Unset means off |
 
 HomeBase will not load a `.env` that is readable by group or others. Importing the package does not create or delete a database. The demo uses a temporary file and leaves the real ledger alone.
 
 The default path is under your home directory, not `/tmp`.
 
-Back up with SQLite's online backup, not by copying a live database file:
+Backups are encrypted on this machine and uploaded to Google Drive. Setup, the headless `rclone` sign-in, and restore steps are in [docs/backups.md](docs/backups.md).
 
 ```bash
-sqlite3 ~/.local/share/homebase/homebase.db ".backup /path/to/private/homebase-backup.db"
+python3 -m homebase backup run
 ```
 
-Keep that backup file mode `0600` as well. The program does not open a network port.
+`backup run` first copies the live ledger with SQLite's online backup API into a private temp directory, then hands that copy to restic. Do not copy the live database file yourself while it is open.
+
+The program does not open a network port. restic and rclone are separate system packages and are used only by the backup commands.
 
 ## Commands
 
@@ -77,6 +83,7 @@ python3 -m homebase balances
 python3 -m homebase inventory
 python3 -m homebase subscriptions
 python3 -m homebase alerts
+python3 -m homebase backup run
 python3 -m homebase ingest receipt.json
 python3 -m homebase import-csv statement.csv --account Checking
 python3 -m homebase compose > docker-compose.yml
