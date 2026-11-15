@@ -1,385 +1,184 @@
 # HomeBase
 
-**Household Resource & Financial Management System**
+A small, private household ledger for a machine you control. It is Python 3 and SQLite, with no third-party libraries required to run. The core is a double-entry journal, receipt ingest, bank CSV reconciliation, and pantry inventory.
 
-A self-hosted, privacy-first household ERP built on SQLite and Docker. Tracks finances, pantry inventory, HSA eligibility, home maintenance, security cameras, energy usage, vehicles, and more — all from a single Python file backed by 25 containerized services.
+This repository is a fork of Naveen4798's household-finance prototype. The earlier `Demo.py` / `Updated_Demo.py` scripts and the previous readme described a large container platform (cameras, Ecobee, Pi-hole analytics, Immich, email parsing, a web UI). Those integrations are **not implemented**. What is here is the ledger MVP, plus a few local reminder tables and an optional Docker Compose file that does not start unless you ask it to.
 
-## What It Does
+There is no `LICENSE` file in this fork. Adding one is the original author's decision. Do not assume the MIT notice from the old readme still applies.
 
-- **Financial ledger** with double-entry accounting, bank CSV reconciliation, and transaction void/reversal
-- **Receipt ingestion** from Walmart, Sam's Club, Amazon, Target, Costco (structured data, email parsing)
-- **HSA tracking** — automatically flags IRS Section 213(d) eligible items from 30+ patterns
-- **Sales tax extraction** per merchant with year-end summaries
-- **Pantry inventory** with multi-pack multipliers (a 4-pack of butter = 4 sticks), low-stock alerts, and physical count audits
-- **Security cameras** via Frigate NVR + Wyze (wz_mini_hacks) — person/package/vehicle detection, all local, no subscription
-- **Energy tracking** via Ecobee API — HVAC runtime, cost estimates with mode-aware kW rates
-- **Vehicle tracking** — mileage, fuel costs, business vs personal split, IRS deduction calculator
-- **Pi-hole DNS analytics** — query volume, ad blocking stats, network visibility
-- **Subscriptions & bills** — tracking with due-date alerts, monthly/annual totals
-- **Home maintenance** — 8 pre-seeded tasks (HVAC filter, gutters, water heater...) with scheduling
-- **Warranty tracking** with expiration alerts
-- **Multi-household & family member** support
-- **Data export** — CSV and JSON for tax prep, insurance claims, or migration
-- **Push notifications** via Ntfy for all alerts
-- **Full audit log** of every financial modification
+## What it does
+
+- **Double-entry ledger.** Receipt lines post to an expense account. Payment methods map to Checking, Credit Card, or HSA by exact name, not by searching the string for `"debit"`. Amounts are integer cents.
+- **Discounts and fees.** If item prices plus tax do not equal the receipt total, the difference is its own `Discounts & Adjustments` line. Every journal must sum to zero or ingest raises `LedgerImbalanceError`.
+- **Receipt ingest** in one database transaction. A failure rolls back the receipt, the journal, the merchant insert, stock changes, and the audit row together.
+- **Pantry.** Map a receipt line to a product with a pack multiplier, then adjust stock, record a physical count, and list low items.
+- **Bank CSV** (ISO dates, a `Date,Description,Amount,Reference` header). Outflows are negative and match a purchase only when the signed amount agrees. Matches allow a short date window (default 3 days). Duplicates are skipped, and bad rows are reported instead of dropped silently.
+- **HSA and sales-tax summaries** with bound parameters. A year argument must be four digits.
+- **Append-only `audit_log`** for financial writes. Triggers reject `UPDATE` and `DELETE`.
+- **Subscriptions** whose next due date is not already in the past, and which move forward when you mark them paid. Also local maintenance tasks and warranty dates. These are reminders in SQLite, not connections to a bank or a utility.
+- **Alerts** whose default text does not include dollar amounts. Set `HOMEBASE_NOTIFY_AMOUNTS=1` to include them, and `HOMEBASE_NTFY_URL` if you want them posted to ntfy.
+
+## What it does not do
+
+No web UI, no accounts or passwords for the ledger itself, no email/IMAP parsing, and no live clients for Actual Budget, Grocy, Mealie, Frigate, Ecobee, Immich, or Pi-hole. The Compose file can describe those services for later; they are in a `later` profile and stay off.
+
+SQLCipher is optional and not bundled. If `HOMEBASE_DB_KEY` is set and this Python's SQLite has no SQLCipher, HomeBase refuses to open the file rather than store it in plaintext.
 
 ## Requirements
 
-- **Python 3.10+** (standard library only — no pip installs required for core features)
-- **Docker + Docker Compose** (for the full service stack)
-- **Hardware**: Ubuntu Server on any x86_64 machine
-  - **Minimum**: 8GB RAM, 128GB SSD (runs core services only)
-  - **Recommended**: 16GB RAM, 128GB SSD + 1TB external HDD (runs everything including Immich + Frigate)
+- Python 3.10 or newer
+- No pip packages for the ledger
+- pytest, if you want to run the tests (`requirements-dev.txt`)
+- Docker only if you later enable the optional Compose profile
 
-## Quick Start
+An 8 GB machine is enough for the ledger. The optional photo and camera containers are not sized for that machine and are off by default.
+
+## Secure setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/homebase.git
-cd homebase
+git clone https://github.com/adept3/Household-Resource-Financial-Management-System-.git
+cd Household-Resource-Financial-Management-System-
 
-# Run the demo (no Docker needed — just Python)
-python3 homebase.py
+cp .env.example .env
+chmod 600 .env
+# Edit .env only if you need a non-default path, ntfy, or a SQLCipher key.
 
-# Or with a custom database location
-HOMEBASE_DB=/path/to/my/homebase.db python3 homebase.py
+python3 -m homebase init
 ```
 
-The demo creates a fresh database, seeds it with sample data (receipts, energy readings, vehicle trips), runs every subsystem, and verifies data integrity.
+`init` creates the data directory at mode `0700` and the database at mode `0600`.
 
-## Configuration
+| Variable | Meaning |
+|---|---|
+| `HOMEBASE_DATA_DIR` | Directory for the ledger. Default: `$XDG_DATA_HOME/homebase` or `~/.local/share/homebase` |
+| `HOMEBASE_DB` | Database file. Default: `$HOMEBASE_DATA_DIR/homebase.db` |
+| `HOMEBASE_ENV_FILE` | Alternate path to the `.env` file |
+| `HOMEBASE_NOTIFY_AMOUNTS` | `0` (default) keeps amounts out of push text |
+| `HOMEBASE_NTFY_URL` / `HOMEBASE_NTFY_TOPIC` | Optional ntfy endpoint. Unset means alerts are printed only |
+| `HOMEBASE_DB_KEY` | Optional SQLCipher key. Unset on stock CPython |
 
-Create a `config.json` in the same directory as `homebase.py`:
+HomeBase will not load a `.env` that is readable by group or others. Importing the package does not create or delete a database. The demo uses a temporary file and leaves the real ledger alone.
+
+The default path is under your home directory, not `/tmp`.
+
+Back up with SQLite's online backup, not by copying a live database file:
+
+```bash
+sqlite3 ~/.local/share/homebase/homebase.db ".backup /path/to/private/homebase-backup.db"
+```
+
+Keep that backup file mode `0600` as well. The program does not open a network port.
+
+## Commands
+
+```bash
+python3 -m homebase demo
+python3 -m homebase balances
+python3 -m homebase inventory
+python3 -m homebase subscriptions
+python3 -m homebase alerts
+python3 -m homebase ingest receipt.json
+python3 -m homebase import-csv statement.csv --account Checking
+python3 -m homebase compose > docker-compose.yml
+```
+
+`demo` prints a balanced Walmart receipt and a Sam's Club receipt whose member pricing is $2.28 under the item-plus-tax total. That $2.28 is a discount line, not an adjustment buried in Groceries. Payroll in the sample CSV is an inflow and is not matched to a purchase.
+
+### Receipt JSON
 
 ```json
 {
-  "db_path": "/opt/homebase/data/homebase.db",
-  "currency": "USD",
-  "irs_mileage_rate": 0.70,
-  "energy_kwh_rate": 0.12,
-  "hvac_kw": {
-    "cool": 3.5,
-    "heat": 10.0,
-    "fan": 0.5,
-    "off": 0.0
-  },
-  "ntfy_url": "http://ntfy:8093",
-  "ntfy_topic": "homebase",
-  "actual_budget_url": "http://actual-budget:5006",
-  "grocy_url": "http://grocy:9283",
-  "mealie_url": "http://mealie:9925",
-  "frigate_url": "http://frigate:5000",
-  "pihole_url": "http://pihole:80",
-  "immich_url": "http://immich-server:2283"
+  "date": "2026-10-01",
+  "merchant": "Walmart",
+  "payment_method": "Debit Card",
+  "items": [
+    {"name": "Milk 1 Gal", "qty": 1, "price": 3.48},
+    {"name": "Paper Towels", "qty": 1, "price": 9.97, "category": "Household Supplies"},
+    {"name": "Ibuprofen 200mg", "qty": 1, "price": 8.97}
+  ],
+  "tax": 0.62,
+  "total": 23.04
 }
 ```
 
-All settings can also be set via environment variables (prefixed `HOMEBASE_`, `ACTUAL_BUDGET_URL`, `GROCY_URL`, etc.). Environment variables override `config.json`.
+Required fields are `date` (YYYY-MM-DD), `merchant`, `payment_method`, `items`, `tax`, and `total`. `qty` is an integer greater than zero. `price` and `tax` are zero or positive dollar amounts. Strings are stripped of nulls and control characters.
 
-### Customizing for Your Home
+Payment methods: `cash`, `checking`, `debit`, `debit card`, `ach`, `credit`, `credit card`, `hsa`, `hsa card`, `hsa debit`, `hsa debit card`.
 
-**Energy rates**: Look up your local electricity rate (kWh price) from your utility bill. Update `energy_kwh_rate`. If you have a heat pump, your `heat` kW is closer to 3-4, not 10.
+Item categories, when you set one: Groceries, Household Supplies, Healthcare, HSA Medical, Utilities, Auto/Fuel, Subscriptions, Home Maintenance. If you omit `category`, a catalog match (ibuprofen, bandages, and the other seeded patterns) posts to HSA Medical and anything else posts to Groceries.
 
-**IRS mileage rate**: Check the current year's rate at [irs.gov](https://www.irs.gov/tax-professionals/standard-mileage-rates). Update `irs_mileage_rate`.
+### Bank CSV
 
-**HSA catalog**: The built-in catalog covers common OTC medications and medical supplies. Add your own patterns by inserting rows into the `hsa_catalog` table:
+```text
+Date,Description,Amount,Reference
+2026-09-20,WALMART SUPERCENTER,-42.93,CHK9920
+2026-09-21,PAYROLL DIRECT DEP,2850.00,DD2609
+```
+
+Negative amounts are money leaving the account. A second import of the same reference is skipped. Rows with a bad date or amount come back in `rejected` with a line number and a reason.
+
+### Library
 
 ```python
-conn.execute("INSERT INTO hsa_catalog (match_pattern, category) VALUES ('%MY PRESCRIPTION%', 'Prescription')")
+from homebase import open_db, ingest_receipt
+
+conn = open_db()  # creates ~/.local/share/homebase/homebase.db
+try:
+    ingest_receipt(conn, receipt)
+finally:
+    conn.close()
 ```
 
-**Maintenance tasks**: The 8 default tasks are common US single-family home tasks. Add your own:
+## Optional containers
 
-```python
-conn.execute("INSERT INTO maintenance_schedule (task, location, frequency_days, estimated_cost_cents, next_due) VALUES ('Clean pool filter', 'Backyard', 30, 0, '2026-10-15')")
-```
+`python3 -m homebase compose` writes a Compose file for services that are **not** part of the running ledger: Traefik, Pi-hole, Unbound, WireGuard, Authelia, CrowdSec, Vaultwarden, Actual Budget, Grocy, Mealie, Paperless, Immich, Frigate, n8n, ntfy, Grafana, Uptime Kuma, Homepage, Syncthing, Stirling PDF, Portainer, and Dozzle.
 
-## Docker Stack Deployment
-
-The system generates a complete `docker-compose.yml` for 25 services. To deploy:
+Every service is in the `later` profile. `docker compose up` starts none of them. Image tags are pinned. Passwords are `${VAR:?...}` references with no default. Docker's socket is mounted read-only, and nothing sets `privileged`. Pi-hole and WireGuard still request the capabilities those daemons need; leave the profile off unless you mean to run them.
 
 ```bash
-# Generate the compose file
-python3 -c "from homebase import generate_docker_compose; print(generate_docker_compose())" > docker-compose.yml
-
-# Create a .env file with your secrets (NEVER commit this)
-cat > .env << 'EOF'
-PIHOLE_PASSWORD=your-secure-password
-POSTGRES_PASSWORD=your-db-password
-AUTHELIA_JWT_SECRET=$(openssl rand -hex 32)
-AUTHELIA_SESSION_SECRET=$(openssl rand -hex 32)
-EOF
-
-# Create required directories
-mkdir -p traefik pihole/etc-pihole pihole/etc-dnsmasq.d unbound wireguard \
-  authelia crowdsec vaultwarden actual-budget grocy mealie \
-  paperless/data immich/model-cache immich/db \
-  frigate n8n ntfy grafana uptime-kuma homepage portainer
-
-# Start everything
-docker compose up -d
-
-# Check status
-docker compose ps
+python3 -m homebase compose > docker-compose.yml
+# Only if you have filled the matching keys in a mode-0600 .env:
+docker compose --profile later up -d
 ```
 
-### Service URLs (after Pi-hole DNS is configured)
+Treat that file as a reviewed starting point. Follow each project's own docs before enabling it, especially on 8 GB of RAM.
 
-| Service | URL | Purpose |
-|---|---|---|
-| Homepage | `home.home.lan` | Dashboard with all service widgets |
-| Actual Budget | `budget.home.lan` | Envelope budgeting |
-| Grocy | `pantry.home.lan` | Inventory & shopping lists |
-| Mealie | `meals.home.lan` | Recipes & meal planning |
-| Paperless-ngx | `docs.home.lan` | Document management & OCR |
-| Immich | `photos.home.lan` | Photo management |
-| Frigate | `cameras.home.lan` | Security camera NVR |
-| Grafana | `dash.home.lan` | Dashboards & analytics |
-| n8n | `auto.home.lan` | Workflow automation |
-| Pi-hole | `pihole.home.lan` | DNS & ad blocking |
-| Ntfy | `ntfy.home.lan` | Push notifications |
-| Authelia | `auth.home.lan` | Single sign-on (2FA) |
-| Portainer | `manage.home.lan` | Docker management |
-| Dozzle | `logs.home.lan` | Container log viewer |
-| Uptime Kuma | `status.home.lan` | Service health monitoring |
-| Vaultwarden | `vault.home.lan` | Password manager |
-| Stirling PDF | `pdf.home.lan` | PDF tools (on-demand) |
-| Syncthing | `sync.home.lan` | File sync |
-| WireGuard | UDP :51820 | VPN remote access |
-
-### Pi-hole Local DNS Setup
-
-After Pi-hole is running, add a custom DNS record so all `*.home.lan` domains resolve to your server:
+## Tests
 
 ```bash
-# Add to pihole/etc-dnsmasq.d/05-custom.conf
-echo "address=/home.lan/192.168.1.50" > pihole/etc-dnsmasq.d/05-custom.conf
-docker compose restart pihole
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest
 ```
 
-Then set your router's DHCP to hand out Pi-hole's IP as the DNS server for all devices on your network.
+The suite covers a discounted journal, atomic ingest rollback, bank matching (sign, date window, duplicates, rejected rows), SQL-injection rejection, private file modes, and the fact that importing the package does not touch the database. GitHub Actions runs the same tests and the demo.
 
-## Hardware Setup Guide
+## Schema
 
-### Recommended: MacBook Pro 2012 (or similar vintage hardware)
+Monetary columns are integer cents. Dates are ISO `YYYY-MM-DD` text. Foreign keys are on. The journal uses WAL mode. `schema_version` is currently `1`.
 
-| Component | Spec | Cost |
-|---|---|---|
-| RAM | **16GB DDR3** (upgrade from 8GB) | ~$30 |
-| SSD | 128GB+ (for OS + Docker + databases) | Already installed |
-| External storage | 1TB HDD/SSD via USB 3.0 or Thunderbolt | ~$50 |
-| UPS | CyberPower or APC 600VA+ | ~$60 |
-
-**RAM upgrade**: 2x 8GB DDR3 1600MHz SO-DIMMs. 16GB unlocks Immich, Frigate, and Grafana.
-
-**UPS is critical**: Protects against sudden power loss corrupting SQLite databases.
-
-### Storage Layout
-
-```
-SSD (128GB):
-  /           Ubuntu Server
-  /swapfile   4-8GB swap
-  /opt/homebase/  Docker images + SQLite databases
-
-External HDD (1TB, ext4, mounted at /mnt/data):
-  /mnt/data/docker/paperless/media/    Scanned documents
-  /mnt/data/docker/immich/upload/      Photos
-  /mnt/data/docker/frigate/media/      Camera recordings
-  /mnt/data/docker/syncthing/          Synced files
-  /mnt/data/backups/                   Restic local repository
-```
-
-Format the external drive:
-
-```bash
-sudo mkfs.ext4 -L homebase-data /dev/sdX1
-echo 'LABEL=homebase-data /mnt/data ext4 defaults,noatime,nofail 0 2' | sudo tee -a /etc/fstab
-sudo mount -a
-```
-
-### Swap Configuration
-
-```bash
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-```
-
-## Security Hardening
-
-### Network (do these first)
-
-```bash
-# UFW firewall
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw limit 22/tcp              # SSH
-sudo ufw allow 80/tcp              # Traefik HTTP
-sudo ufw allow 443/tcp             # Traefik HTTPS
-sudo ufw allow 53/tcp              # Pi-hole DNS
-sudo ufw allow 53/udp
-sudo ufw allow 51820/udp           # WireGuard VPN
-sudo ufw enable
-
-# Fix Docker/UFW bypass
-sudo wget -O /usr/local/bin/ufw-docker https://github.com/chaifeng/ufw-docker/raw/master/ufw-docker
-sudo chmod +x /usr/local/bin/ufw-docker
-sudo ufw-docker install
-
-# Fail2ban
-sudo apt install fail2ban
-```
-
-### Remote Access
-
-**Never expose services to the internet.** Use WireGuard VPN instead:
-
-1. Forward only UDP 51820 on your router
-2. Install WireGuard client on your phone/laptop
-3. Scan the QR code from `./wireguard/peer_phone/peer_phone.png`
-4. VPN clients get Pi-hole ad blocking + local DNS for `*.home.lan`
-
-### VLAN Segmentation (if your router supports it)
-
-| VLAN | Subnet | Devices |
-|---|---|---|
-| 1 (Trusted) | 192.168.1.0/24 | Laptops, phones, server |
-| 10 (IoT) | 192.168.10.0/24 | Wyze cameras, Ecobee, smart plugs |
-| 20 (Guest) | 192.168.20.0/24 | Visitor Wi-Fi |
-
-IoT devices can't reach trusted devices. Trusted devices can access camera feeds.
-
-### Backups (3-2-1 Rule)
-
-```bash
-# Install Restic
-sudo apt install restic
-
-# Initialize local backup repo
-restic -r /mnt/data/backups/restic-repo init
-
-# Initialize cloud backup (Backblaze B2, ~$0.50/month)
-export B2_ACCOUNT_ID="your-id"
-export B2_ACCOUNT_KEY="your-key"
-restic -r b2:homebase-backup init
-
-# Backup script (run via cron at 3 AM daily)
-#!/bin/bash
-# Dump live SQLite databases first (never backup a live SQLite file)
-sqlite3 /opt/homebase/data/homebase.db ".backup /mnt/data/backups/exports/homebase.db"
-
-restic -r b2:homebase-backup backup \
-  /mnt/data/backups/exports/ \
-  /mnt/data/docker/paperless/media/ \
-  --tag homebase \
-  --exclude="*.tmp"
-
-restic -r b2:homebase-backup forget \
-  --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
-```
-
-## Using as a Library
-
-HomeBase is a single Python file with no external dependencies (for core features). Import it in your own scripts:
-
-```python
-from homebase import open_db, ingest_receipt, get_low_stock_alerts, check_and_notify_alerts
-
-conn = open_db("/path/to/homebase.db")
-
-# Ingest a receipt
-txn_id = ingest_receipt(conn, {
-    "date": "2026-10-01",
-    "merchant": "Walmart",
-    "payment_method": "Debit Card",
-    "items": [
-        {"name": "Milk 1 Gal", "qty": 1, "price": 3.48},
-        {"name": "Tylenol 100ct", "qty": 1, "price": 9.97},
-    ],
-    "tax": 0.62,
-    "total": 14.07,
-})
-
-# Check for alerts and send push notifications
-alerts = check_and_notify_alerts(conn)
-
-conn.close()
-```
-
-### n8n Integration
-
-Use n8n's HTTP Request node to call your Python scripts on a schedule:
-
-1. **Daily 8 AM**: Check upcoming bills -> Ntfy push notification
-2. **After email receipt**: Parse receipt -> ingest_receipt() -> update inventory
-3. **Every 30 min**: Poll Ecobee API -> log_energy_reading()
-4. **Every 5 min**: Poll Pi-hole API -> log_dns_stats()
-5. **Nightly**: Export data -> Restic backup -> verify integrity
-
-## Database Schema
-
-22 tables organized by domain:
-
-| Domain | Tables |
+| Area | Tables |
 |---|---|
-| **Core** | `households`, `family_members`, `audit_log` |
-| **Financial** | `accounts`, `merchants`, `transactions`, `journal_entries`, `transaction_items` |
-| **HSA/Tax** | `hsa_catalog` |
-| **Inventory** | `products`, `inventory`, `receipt_product_mappings`, `inventory_audits` |
-| **Banking** | `bank_imports` |
-| **Security** | `security_events` |
-| **Energy** | `energy_readings` |
-| **Vehicles** | `vehicles`, `vehicle_trips` |
-| **DNS** | `dns_stats` |
-| **Home** | `maintenance_schedule`, `subscriptions`, `warranties` |
+| Ledger | `accounts`, `merchants`, `transactions`, `journal_entries`, `transaction_items`, `hsa_catalog` |
+| Pantry | `products`, `inventory`, `receipt_product_mappings`, `inventory_audits` |
+| Bank | `bank_imports` |
+| Reminders | `subscriptions`, `maintenance_schedule`, `warranties` |
+| Meta | `schema_version`, `audit_log` |
 
-All monetary values stored as **integer cents** (never floats). All dates stored as ISO 8601 strings. Foreign keys enforced. WAL mode enabled for concurrent reads.
+Indexes cover transaction dates, reconciliation lookups, journal and item foreign keys, bank dedupe, and the audit timestamp.
 
-## Known Limitations
+Journal sign: a positive amount is a debit, a negative amount is a credit. Expenses and sales tax are positive. The payment account is negative. A discount is a negative amount on `Discounts & Adjustments`; a fee is a positive amount on that same account.
 
-- **Single-file architecture**: Works well for household scale (<100K transactions). For larger deployments, consider splitting into a package structure.
-- **No web UI**: HomeBase is a Python library + CLI. Use Actual Budget, Grocy, and Grafana for web interfaces.
-- **Bank reconciliation is exact-match**: Matches by date + amount. No fuzzy matching yet.
-- **HSA catalog is US-only**: Based on IRS Section 213(d). International users need to customize.
-- **Immich/Frigate require 16GB RAM**: Won't run on 8GB systems.
+## Layout
 
-## Contributing
+```text
+homebase/          Python package (stdlib only)
+  cli.py           python -m homebase
+  ledger.py        receipts and the journal
+  bank.py          CSV reconciliation
+  inventory.py     pantry
+  db.py            path, permissions, schema, audit log
+tests/             pytest
+.env.example       documented variables, no secrets
+```
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Run the demo to verify nothing breaks (`python3 homebase.py`)
-4. Submit a pull request
-
-### Code Quality Expectations
-
-- All financial operations must use `to_cents()` (never `float * 100`)
-- All multi-statement DB operations must use `with atomic(conn):`
-- All journal entries must pass balance assertion
-- All user input must go through `sanitize_str()`
-- Add entries to `audit_log` for any data modification
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-Built on the shoulders of these open-source projects:
-[Actual Budget](https://actualbudget.org) |
-[Grocy](https://grocy.info) |
-[Mealie](https://mealie.io) |
-[Paperless-ngx](https://docs.paperless-ngx.com) |
-[Immich](https://immich.app) |
-[Frigate](https://frigate.video) |
-[Pi-hole](https://pi-hole.net) |
-[Traefik](https://traefik.io) |
-[Authelia](https://www.authelia.com) |
-[n8n](https://n8n.io) |
-[Ntfy](https://ntfy.sh) |
-[Grafana](https://grafana.com) |
-[Restic](https://restic.net)
+`Demo.py` and `Updated_Demo.py` were removed. The useful part of the v4 journal note (the Sam's Club receipt did not balance) is fixed in `homebase/ledger.py` by posting the gap explicitly. The note's approach of hiding the gap inside Groceries was not kept, and its `assert` was replaced with `LedgerImbalanceError`.
