@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly HomeBase backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=homebase-backup.service
+
+[Install]
+WantedBy=timers.target
